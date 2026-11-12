@@ -1,0 +1,1 @@
+{"name":"mun-or-bust","private":true,"type":"module","scripts":{"test":"node --test tests/calculators.test.mjs && node tests/database.mjs","check":"node --check app.js && node --check mission.js && node --check references.js && node --check sw.js"},"devDependencies":{"@electric-sql/pglite":"0.5.16"}}
