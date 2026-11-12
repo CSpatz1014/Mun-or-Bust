@@ -1,0 +1,4 @@
+[functions.discord-bridge]
+# Each POST verifies either the Supabase user or a private dispatcher secret.
+# GET only redirects OAuth codes back to the app; completion requires the same user's JWT.
+verify_jwt = false

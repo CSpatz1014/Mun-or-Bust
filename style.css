@@ -8,3 +8,6 @@
 @media(max-width:600px){.hub-tabs{flex-wrap:nowrap;overflow-x:auto;padding-bottom:8px}.hub-tabs button{white-space:nowrap}.hub-records{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{min-width:0;width:100%}.chat-search{display:grid;grid-template-columns:1fr 1fr}.chat-search input{grid-column:1/-1}.slot-row{flex-wrap:wrap}}
 .chat-layout{height:max(760px,calc(100dvh - 230px));max-height:none}.chat-header,.chat-search,.chat-history,.chat-compose{flex-shrink:0}.chat-compose .row>select{width:auto;flex:1;min-width:150px}.chat-compose .row>label{flex:1;min-width:180px;margin:0}.message-actions{flex-wrap:wrap}.chat-messages{min-height:180px}
 @media(max-width:600px){.chat-layout{height:auto;min-height:0}.chat-room{flex:none}.chat-messages{height:300px;flex:none}.chat-compose .row>select,.chat-compose .row>label{flex-basis:100%}}
+
+
+#discord-settings fieldset{border:1px solid var(--line);border-radius:10px;padding:16px;margin:18px 0}
