@@ -1,10 +1,11 @@
-// Server-only integration. Tokens never enter the public site or delivery log.
+// Discord bridge diagnostic build v2. Tokens never enter the public site or delivery log.
+class DiagnosticError extends Error {}
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const snowflake=s=>/^\d{15,22}$/.test(s||'');
 const digest=async s=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))),v=>v.toString(16).padStart(2,'0')).join('');
 const plain=s=>String(s??'').replace(/[\\`*_~|<>\[\]]/g,'\\$&').slice(0,240);
 export function webhookURL(value){const u=new URL(value);if(u.protocol!=='https:'||u.hostname!=='discord.com'||u.port||u.username||u.password||!/^\/api(?:\/v10)?\/webhooks\/\d+\/[A-Za-z0-9_-]+$/.test(u.pathname))throw Error('webhook_configuration');u.search='?wait=true';u.hash='';return u.href}
-export function botConfig(env){const keys=['DISCORD_GUILD_ID','DISCORD_ROLE_CREW','DISCORD_ROLE_MENTOR','DISCORD_ROLE_LEAD'],ids=keys.map(k=>env.get(k));if(ids.some(x=>!snowflake(x))||new Set(ids).size!==4||!env.get('DISCORD_BOT_TOKEN'))throw Error('bot_configuration');return {guild:ids[0],roles:{member:ids[1],mentor:ids[2],admin:ids[3]},token:env.get('DISCORD_BOT_TOKEN')}}
+export function botConfig(env){const keys=['DISCORD_GUILD_ID','DISCORD_ROLE_CREW','DISCORD_ROLE_MENTOR','DISCORD_ROLE_LEAD'],ids=keys.map(k=>env.get(k));for(let i=0;i<keys.length;i++){if(!ids[i])throw new DiagnosticError('missing_'+keys[i]);if(!snowflake(ids[i]))throw new DiagnosticError('invalid_'+keys[i])}if(new Set(ids).size!==4)throw new DiagnosticError('duplicate_server_or_role_ids');if(!env.get('DISCORD_BOT_TOKEN'))throw new DiagnosticError('missing_DISCORD_BOT_TOKEN');return {guild:ids[0],roles:{member:ids[1],mentor:ids[2],admin:ids[3]},token:env.get('DISCORD_BOT_TOKEN')}}
 export function messagePayload(row,site){const p=row.payload,url=new URL(site);url.hash=/^(tasks|dashboard|project\/[a-z]+)$/.test(p.route)?p.route:'dashboard';url.search='';const fields=[];if(p.status)fields.push({name:'Status',value:plain(p.status),inline:true});if(p.due_date)fields.push({name:'Date',value:plain(p.due_date)+' · all day; cutoff time not specified'});else if(p.due_at&&Number.isFinite(Date.parse(p.due_at)))fields.push({name:row.category==='meetings'?'Meeting time':'Due',value:`<t:${Math.floor(Date.parse(p.due_at)/1000)}:F>`});if(p.revision)fields.push({name:'Revision',value:String(p.revision),inline:true});return {username:'Mun or Bust · Mission Control',allowed_mentions:{parse:[]},embeds:[{title:plain(p.label),description:plain(p.title),url:url.href,color:12572992,fields,footer:{text:'Open the team app for details'}}]}}
 export function discordAPI(config,request){return async(path,method='GET',body)=>{const r=await request('https://discord.com/api/v10/'+path,{method,headers:{Authorization:'Bot '+config.token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('discord_http_'+r.status);return r.status===204?null:r.json()}}
 export async function syncRole({userId,api,env,request}){
@@ -38,7 +39,8 @@ export function createHandler({env,fetch:request=fetch}){return async req=>{
  }
  if(req.method!=='POST')return respond(405,{error:'POST required'});
  const base=env.get('SUPABASE_URL'),key=env.get('SUPABASE_SERVICE_ROLE_KEY');if(!base||!key)return respond(503,{error:'Backend not configured'});
- const api=async(path,method='GET',body)=>{const r=await request(base+'/rest/v1/'+path,{method,headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('database_error');const text=await r.text();return text.trim()?JSON.parse(text):null};
+ let stage='database_request';
+ const api=async(path,method='GET',body)=>{const r=await request(base+'/rest/v1/'+path,{method,headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(8000)});if(!r.ok){let detail;try{detail=await r.json()}catch{}const code=typeof detail?.code==='string'&&/^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(detail.code)?'_'+detail.code:'';throw new DiagnosticError('database_http_'+r.status+code)};const text=await r.text();return text.trim()?JSON.parse(text):null};
  let body;try{const text=await req.text();if(text.length>16000)return respond(413,{error:'Payload too large'});body=JSON.parse(text)}catch{return respond(400,{error:'Invalid JSON'})}
  try{
   if(body.table==='discord_outbox'){
@@ -59,30 +61,44 @@ export function createHandler({env,fetch:request=fetch}){return async req=>{
   // Every account-link operation requires a verified current Supabase user.
   if(req.headers.get('origin')!==site.origin)return respond(403,{error:'Open this from the team website.'});
   const authorization=req.headers.get('authorization')||'';if(!authorization.startsWith('Bearer '))return respond(401,{error:'Sign in first.'});
+  stage='verify_app_session';
   const who=await request(base+'/auth/v1/user',{headers:{apikey:key,Authorization:authorization},signal:AbortSignal.timeout(8000)});if(!who.ok)return respond(401,{error:'Sign in again.'});const user=await who.json();if(!UUID.test(user.id))return respond(401,{error:'Invalid user'});
+  stage='read_team_profile';
   const [profile]=await api('profiles?id=eq.'+user.id+'&select=active');if(!profile?.active)return respond(403,{error:'Active team membership required.'});
-  const cfg=botConfig(env),client=env.get('DISCORD_CLIENT_ID'),secret=env.get('DISCORD_CLIENT_SECRET'),redirect=base+'/functions/v1/discord-bridge';if(!snowflake(client)||!secret)throw Error('configuration_error');
+  stage='validate_discord_settings';
+  const cfg=botConfig(env),client=env.get('DISCORD_CLIENT_ID'),secret=env.get('DISCORD_CLIENT_SECRET'),redirect=base+'/functions/v1/discord-bridge';if(!client)throw new DiagnosticError('missing_DISCORD_CLIENT_ID');if(!snowflake(client))throw new DiagnosticError('invalid_DISCORD_CLIENT_ID');if(!secret)throw new DiagnosticError('missing_DISCORD_CLIENT_SECRET');
   if(body.action==='start'){
+   stage='clear_previous_authorization';
    await api('discord_oauth_states?or=(user_id.eq.'+user.id+',expires_at.lt.'+encodeURIComponent(new Date().toISOString())+')','DELETE');
+   stage='save_authorization_state';
    const state=crypto.randomUUID()+crypto.randomUUID();await api('discord_oauth_states','POST',{state_hash:await digest(state),user_id:user.id});
    const url=new URL('https://discord.com/oauth2/authorize');url.search=new URLSearchParams({client_id:client,response_type:'code',redirect_uri:redirect,scope:'identify guilds.join',state,prompt:'consent'}).toString();return respond(200,{url:url.href});
   }
   if(body.action!=='finish'||typeof body.state!=='string'||body.state.length>200||typeof body.code!=='string'||body.code.length>2000)return respond(400,{error:'Invalid connection request'});
+  stage='consume_authorization_state';
   const [saved]=await api('rpc/consume_discord_state','POST',{hash:await digest(body.state),target:user.id});if(!saved)return respond(400,{error:'Connection expired or belongs to another team account. Start again.'});
+  stage='exchange_discord_code';
   const tokens=await request('https://discord.com/api/v10/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:client,client_secret:secret,grant_type:'authorization_code',code:body.code,redirect_uri:redirect}),signal:AbortSignal.timeout(10000)});
   if(!tokens.ok)return respond(400,{error:'Discord authorization expired. Start again.'});const token=await tokens.json();
   try{
+   stage='read_discord_identity';
    const identityResponse=await request('https://discord.com/api/v10/users/@me',{headers:{Authorization:'Bearer '+token.access_token},signal:AbortSignal.timeout(8000)});if(!identityResponse.ok)throw Error('identity_error');const identity=await identityResponse.json();if(!snowflake(identity.id))throw Error('identity_error');
+   stage='check_account_link';
    const [mine]=await api('discord_links?user_id=eq.'+user.id+'&select=discord_id');if(mine&&mine.discord_id!==identity.id)return respond(409,{error:'Use your previously linked Discord account. Ask the admin if the link needs repair.'});
    const [other]=await api('discord_links?discord_id=eq.'+identity.id+'&select=user_id');if(other&&other.user_id!==user.id)return respond(409,{error:'This Discord account belongs to another team account.'});
    const [current]=await api('profiles?id=eq.'+user.id+'&select=active');if(!current?.active)return respond(403,{error:'Membership inactive.'});
+   stage='save_account_link';
    if(!mine)await api('discord_links','POST',{user_id:user.id,discord_id:identity.id});
+   stage='join_discord_server';
    await discordAPI(cfg,request)('guilds/'+cfg.guild+'/members/'+identity.id,'PUT',{access_token:token.access_token});
+   stage='queue_role_sync';
    await api('discord_outbox','POST',{category:'access',payload:{user_id:user.id,label:'Discord join role sync'}});
    return respond(200,{connected:true});
   }finally{await request('https://discord.com/api/v10/oauth2/token/revoke',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:client,client_secret:secret,token:token.access_token,token_type_hint:'access_token'}),signal:AbortSignal.timeout(5000)}).catch(()=>{})}
- }catch{
-  // Never print raw network errors, which may contain a webhook credential.
-  return respond(503,{error:'Integration could not finish. Ask an admin to check setup and delivery status, then retry.'});
+ }catch(e){
+  // Only locally constructed diagnostics and known error codes are exposed.
+  // Never return/log raw network errors, URLs, request headers or response bodies.
+  const code=e instanceof DiagnosticError?e.message:/^(discord_http_[0-9]{3}|identity_error)$/.test(e?.message||'')?e.message:'unexpected_response_or_network_error';
+  return respond(503,{error:'Integration diagnostic v2: '+stage+' / '+code+'. Share this diagnostic text with the site maintainer.'});
  }
 }}

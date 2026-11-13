@@ -50,3 +50,18 @@ for (const insertStatus of [201,204]) test('OAuth start accepts empty successful
  assert.equal(r.status,200);const u=new URL((await r.json()).url);assert.equal(u.origin,'https://discord.com');assert.equal(u.searchParams.get('scope'),'identify guilds.join');assert.ok(deleted);assert.equal(saved.user_id,uid);
  const state=u.searchParams.get('state'),hash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(state))).toString('hex');assert.equal(saved.state_hash,hash);assert.notEqual(saved.state_hash,state);
 });
+for(const name of ['DISCORD_GUILD_ID','DISCORD_ROLE_CREW','DISCORD_ROLE_MENTOR','DISCORD_ROLE_LEAD','DISCORD_CLIENT_ID','DISCORD_BOT_TOKEN','DISCORD_CLIENT_SECRET'])test('diagnostic identifies missing '+name+' without exposing values',async()=>{
+ const h=createHandler({env:{get:k=>k===name?undefined:vars[k]},fetch:async url=>url.endsWith('/auth/v1/user')?reply({id:uid}):reply([{active:true}])});
+ const r=await h(request({action:'start'},{origin:new URL(vars.MUN_SITE_URL).origin,authorization:'Bearer user-session'}));const text=await r.text();assert.equal(r.status,503);assert.ok(text.includes('validate_discord_settings / missing_'+name));assert.ok(!text.includes('bot-secret'));assert.ok(!text.includes('oauth-secret'));
+});
+test('database diagnostic identifies state write failure without copying error detail',async()=>{
+ const h=createHandler({env,fetch:async(url,o={})=>{
+  if(url.endsWith('/auth/v1/user'))return reply({id:uid});if(url.includes('/profiles?'))return reply([{active:true}]);
+  if(o.method==='DELETE')return new Response(null,{status:204});return new Response(JSON.stringify({code:'42501',message:'secret must not escape',details:vars.DISCORD_WEBHOOK_URL}),{status:403});
+ }});
+ const r=await h(request({action:'start'},{origin:new URL(vars.MUN_SITE_URL).origin,authorization:'Bearer user-session'}));const text=await r.text();assert.ok(text.includes('save_authorization_state / database_http_403_42501'));assert.ok(!text.includes('must not escape'));assert.ok(!text.includes(vars.DISCORD_WEBHOOK_URL));
+});
+test('network error text never appears in diagnostic',async()=>{
+ const h=createHandler({env,fetch:async()=>{throw Error('fetch failed '+vars.DISCORD_WEBHOOK_URL)}});
+ const r=await h(request({action:'start'},{origin:new URL(vars.MUN_SITE_URL).origin,authorization:'Bearer user-session'}));const text=await r.text();assert.ok(text.includes('verify_app_session / unexpected_response_or_network_error'));assert.ok(!text.includes(vars.DISCORD_WEBHOOK_URL));
+});
