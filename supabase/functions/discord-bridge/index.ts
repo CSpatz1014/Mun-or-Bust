@@ -38,7 +38,7 @@ export function createHandler({env,fetch:request=fetch}){return async req=>{
  }
  if(req.method!=='POST')return respond(405,{error:'POST required'});
  const base=env.get('SUPABASE_URL'),key=env.get('SUPABASE_SERVICE_ROLE_KEY');if(!base||!key)return respond(503,{error:'Backend not configured'});
- const api=async(path,method='GET',body)=>{const r=await request(base+'/rest/v1/'+path,{method,headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('database_error');return r.status===204?null:r.json()};
+ const api=async(path,method='GET',body)=>{const r=await request(base+'/rest/v1/'+path,{method,headers:{apikey:key,Authorization:'Bearer '+key,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('database_error');const text=await r.text();return text.trim()?JSON.parse(text):null};
  let body;try{const text=await req.text();if(text.length>16000)return respond(413,{error:'Payload too large'});body=JSON.parse(text)}catch{return respond(400,{error:'Invalid JSON'})}
  try{
   if(body.table==='discord_outbox'){

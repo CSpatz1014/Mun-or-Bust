@@ -27,7 +27,7 @@ test('successful join queues authoritative role sync and revokes the temporary g
   if(url.endsWith('/oauth2/token'))return reply({access_token:'temporary-token'});
   if(url.endsWith('/users/@me'))return reply({id:discordId});
   if(url.includes('/discord_links?'))return reply([]);
-  if(url.endsWith('/discord_links')||url.endsWith('/discord_outbox')){writes.push({url,value:JSON.parse(o.body)});return new Response(null,{status:204})}
+  if(url.endsWith('/discord_links')||url.endsWith('/discord_outbox')){writes.push({url,value:JSON.parse(o.body)});return new Response(null,{status:201})}
   if(url.includes('/guilds/')){assert.equal(o.method,'PUT');assert.deepEqual(JSON.parse(o.body),{access_token:'temporary-token'});return reply({})}
   if(url.endsWith('/token/revoke')){revoked=true;return new Response(null,{status:200})}
   throw Error('Unexpected request '+url);
@@ -35,4 +35,18 @@ test('successful join queues authoritative role sync and revokes the temporary g
  const r=await h(request({action:'finish',code:'code',state:'state',role:'admin',user_id:id},{origin:new URL(vars.MUN_SITE_URL).origin,authorization:'Bearer user-session'}));
  assert.equal(r.status,200);assert.deepEqual(await r.json(),{connected:true});assert.equal(revoked,true);
  assert.deepEqual(writes[0].value,{user_id:uid,discord_id:discordId});assert.equal(writes[1].value.payload.user_id,uid);assert.equal(writes[1].value.category,'access');assert.equal(writes[1].value.payload.role,undefined);
+});
+
+for (const insertStatus of [201,204]) test('OAuth start accepts empty successful writes: '+insertStatus,async()=>{
+ let saved,deleted=false;
+ const h=createHandler({env,fetch:async(url,o={})=>{
+  if(url.endsWith('/auth/v1/user'))return reply({id:uid});
+  if(url.includes('/profiles?'))return reply([{active:true}]);
+  if(url.includes('/discord_oauth_states?')){assert.equal(o.method,'DELETE');deleted=true;return new Response(null,{status:204})}
+  if(url.endsWith('/discord_oauth_states')){assert.equal(o.method,'POST');saved=JSON.parse(o.body);return new Response(null,{status:insertStatus})}
+  throw Error('Unexpected request');
+ }});
+ const r=await h(request({action:'start'},{origin:new URL(vars.MUN_SITE_URL).origin,authorization:'Bearer user-session'}));
+ assert.equal(r.status,200);const u=new URL((await r.json()).url);assert.equal(u.origin,'https://discord.com');assert.equal(u.searchParams.get('scope'),'identify guilds.join');assert.ok(deleted);assert.equal(saved.user_id,uid);
+ const state=u.searchParams.get('state'),hash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(state))).toString('hex');assert.equal(saved.state_hash,hash);assert.notEqual(saved.state_hash,state);
 });
